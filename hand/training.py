@@ -3,7 +3,6 @@ from tensorflow.keras import layers, models
 import numpy as np
 import json
 import cv2
-import os
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
@@ -66,88 +65,8 @@ def iou_metric(y_true, y_pred):
     )
     return tf.reduce_mean(iou_scores)
 
-def apply_augmentation(image, bbox):
-    """Apply augmentations that preserve bounding box coordinates"""
-    augmented_images = []
-    augmented_boxes = []
-    
-    # Make sure image is 3D array (height, width, 1) for grayscale
-    if len(image.shape) == 2:
-        image = np.expand_dims(image, axis=-1)
-    
-    # Original image and box
-    augmented_images.append(image)
-    augmented_boxes.append(bbox)
-    
-    # Horizontal flip
-    flipped_image = cv2.flip(image, 1)
-    flipped_bbox = [1 - bbox[0] - bbox[2], bbox[1], bbox[2], bbox[3]]  # Adjust x coordinate
-    augmented_images.append(flipped_image)
-    augmented_boxes.append(flipped_bbox)
-    
-    # Brightness variations
-    for factor in [0.8, 1.2]:  # Darker and brighter
-        adjusted = np.clip(image * factor, 0, 1)
-        augmented_images.append(adjusted)
-        augmented_boxes.append(bbox)  # Bbox unchanged
-    
-    # Contrast adjustment
-    for factor in [0.8, 1.2]:  # Lower and higher contrast
-        mean = np.mean(image, axis=(0, 1), keepdims=True)
-        adjusted = np.clip((image - mean) * factor + mean, 0, 1)
-        augmented_images.append(adjusted)
-        augmented_boxes.append(bbox)  # Bbox unchanged
-        
-    # Small rotations (only small angles to prevent bbox distortion)
-    for angle in [-10, 10]:  # -10 and +10 degrees
-        center = (image.shape[1] / 2, image.shape[0] / 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        rotated = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]))
-        # Maintain channel dimension
-        if len(rotated.shape) == 2:
-            rotated = np.expand_dims(rotated, axis=-1)
-        
-        # Adjust bbox for rotation
-        # Convert bbox to corners
-        x, y, w, h = bbox
-        corners = np.array([
-            [x, y],
-            [x + w, y],
-            [x + w, y + h],
-            [x, y + h]
-        ])
-        corners = corners * np.array([image.shape[1], image.shape[0]])
-        
-        # Rotate corners
-        ones = np.ones(shape=(len(corners), 1))
-        corners_ones = np.hstack([corners, ones])
-        transformed = M.dot(corners_ones.T).T
-        
-        # Get new bbox
-        min_xy = transformed.min(axis=0)
-        max_xy = transformed.max(axis=0)
-        new_bbox = [
-            min_xy[0] / image.shape[1],
-            min_xy[1] / image.shape[0],
-            (max_xy[0] - min_xy[0]) / image.shape[1],
-            (max_xy[1] - min_xy[1]) / image.shape[0]
-        ]
-        
-        # Only add if bbox is still fully within image
-        if (new_bbox[0] >= 0 and new_bbox[1] >= 0 and
-            new_bbox[0] + new_bbox[2] <= 1 and
-            new_bbox[1] + new_bbox[3] <= 1):
-            augmented_images.append(rotated)
-            augmented_boxes.append(new_bbox)
-    
-    # Make sure all images have the same shape (height, width, 1)
-    augmented_images = [np.expand_dims(img, axis=-1) if len(img.shape) == 2 else img 
-                       for img in augmented_images]
-    
-    return augmented_images, augmented_boxes
-
 def load_hand_dataset(dataset_path, image_size=(224, 224)):
-    """Load hand detection dataset with augmentations"""
+    """Load hand detection dataset without augmentations"""
     dataset_path = Path(dataset_path)
     images_dir = dataset_path / "images"
     annotations_file = dataset_path / "annotations.json"
@@ -169,7 +88,7 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
         try:
             # Load image
             image_path = images_dir / img_ann['file_name']
-            image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)  # Load as grayscale
+            image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
             
             if image is None:
                 print(f"Failed to load image: {image_path}")
@@ -183,11 +102,8 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
             # Get bbox
             bbox = img_ann['bbox']
             
-            # Apply augmentations
-            aug_images, aug_boxes = apply_augmentation(image, bbox)
-            
-            images.extend(aug_images)
-            boxes.extend(aug_boxes)
+            images.append(image)
+            boxes.append(bbox)
             
             if idx % 100 == 0:
                 print(f"Processed {idx}/{total_images} images")
@@ -199,7 +115,7 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
     if len(images) == 0:
         raise ValueError("No images loaded from dataset")
     
-    print(f"Successfully loaded {len(images)} images (including augmentations)")
+    print(f"Successfully loaded {len(images)} images")
     return np.array(images), np.array(boxes)
 
 def create_model(input_shape=(224, 224, 1)):
@@ -213,16 +129,24 @@ def create_model(input_shape=(224, 224, 1)):
     model = models.Sequential([
         layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),
         base_model,
-        layers.Conv2D(256, 3, activation='relu'),
         layers.GlobalAveragePooling2D(),
-        layers.Dense(256, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(128, activation='relu'),
-        layers.Dense(4, activation='sigmoid')
+        layers.Dense(64, 
+                    activation='relu', 
+                    kernel_regularizer=tf.keras.regularizers.l2(0.001)),  # Reduced from 0.01
+        layers.BatchNormalization(),
+        layers.Dropout(0.3),  # Reduced dropout
+        layers.Dense(32, 
+                    activation='relu',
+                    kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+        layers.BatchNormalization(),
+        layers.Dropout(0.3),
+        layers.Dense(4, 
+                    activation='sigmoid',
+                    kernel_regularizer=tf.keras.regularizers.l2(0.001))
     ])
     return model
 
-def train_model(dataset_path, epochs=65, batch_size=32):
+def train_model(dataset_path, epochs=100, batch_size=32):
     """Train the hand detection model"""
     # Load dataset
     images, boxes = load_hand_dataset(dataset_path)
@@ -238,9 +162,9 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     # Create and compile model
     model = create_model()
     model.compile(
-        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=0.001),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
         loss=custom_bbox_loss(width_weight=2.0),
-        metrics=['accuracy', 'mae', iou_metric]
+        metrics=['mae', iou_metric]
     )
     
     # Create callbacks
@@ -251,14 +175,14 @@ def train_model(dataset_path, epochs=65, batch_size=32):
             save_weights_only=True,
             monitor='val_iou_metric',
             mode='max',
-            verbose=1
+            verbose=0
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
             factor=0.5,
             patience=5,
             min_lr=1e-6,
-            verbose=1
+            verbose=0
         )
     ]
     
@@ -274,10 +198,10 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     )
     
     # Plot training history
-    plt.figure(figsize=(15, 5))
-    
+    plt.figure(figsize=(12, 4))
+
     # Plot IoU
-    plt.subplot(1, 3, 1)
+    plt.subplot(1, 2, 1)
     plt.plot(history.history['iou_metric'], label='Training IoU')
     plt.plot(history.history['val_iou_metric'], label='Validation IoU')
     plt.title('Model IoU')
@@ -285,19 +209,9 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     plt.ylabel('IoU')
     plt.legend(loc='lower right')
     plt.grid(True)
-    
-    # Plot accuracy
-    plt.subplot(1, 3, 2)
-    plt.plot(history.history['accuracy'], label='Training Accuracy')
-    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-    plt.title('Model Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend(loc='lower right')
-    plt.grid(True)
-    
+
     # Plot loss
-    plt.subplot(1, 3, 3)
+    plt.subplot(1, 2, 2)
     plt.plot(history.history['loss'], label='Training Loss')
     plt.plot(history.history['val_loss'], label='Validation Loss')
     plt.title('Model Loss')
@@ -305,7 +219,7 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     plt.ylabel('Loss')
     plt.legend(loc='upper right')
     plt.grid(True)
-    
+
     plt.tight_layout()
     plt.savefig('training_history.png')
     plt.close()
@@ -414,7 +328,7 @@ if __name__ == "__main__":
     np.random.seed(42)
     
     # Set path to your dataset
-    dataset_path = "hand_dataset"
+    dataset_path = "hand_dataset_augmented"
     
     # Train model
     model, training_history = train_model(dataset_path)
