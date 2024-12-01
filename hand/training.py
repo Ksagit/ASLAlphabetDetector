@@ -86,14 +86,12 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
     images = []
     boxes = []
     
-    print("Loading dataset...")
     
     # Load annotations
     with open(annotations_file, 'r') as f:
         annotations = json.load(f)
     
     total_images = len(annotations['images'])
-    print(f"Found {total_images} images in annotations")
     
     # Process each image and its annotation
     for idx, img_ann in enumerate(annotations['images'], 1):
@@ -118,9 +116,6 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
             
             images.extend(aug_images)
             boxes.extend(aug_boxes)
-            
-            if idx % 100 == 0:
-                print(f"Processed {idx}/{total_images} images")
                 
         except Exception as e:
             print(f"Error processing {img_ann['file_name']}: {str(e)}")
@@ -129,7 +124,6 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
     if len(images) == 0:
         raise ValueError("No images loaded from dataset")
     
-    print(f"Successfully loaded {len(images)} images (including augmentations)")
     return np.array(images), np.array(boxes)
 
 def create_model(input_shape=(224, 224, 3)):
@@ -164,7 +158,7 @@ def create_model(input_shape=(224, 224, 3)):
     
     return model
 
-def train_model(dataset_path, epochs=50, batch_size=32):
+def train_model(dataset_path, epochs=65, batch_size=32):
     """Train the hand detection model"""
     # Load dataset
     images, boxes = load_hand_dataset(dataset_path)
@@ -206,7 +200,6 @@ def train_model(dataset_path, epochs=50, batch_size=32):
     ]
     
     # Train model
-    print("Training model...")
     history = model.fit(
         X_train, y_train,
         epochs=epochs,
@@ -269,6 +262,74 @@ def predict_on_image(model, image_path, image_size=(224, 224)):
     
     return image_display
 
+def plot_predictions(model, dataset_path, num_examples=4, image_size=(224, 224)):
+    """Plot model predictions vs ground truth"""
+    dataset_path = Path(dataset_path)
+    images_dir = dataset_path / "images"
+    annotations_file = dataset_path / "annotations.json"
+    
+    # Load annotations
+    with open(annotations_file, 'r') as f:
+        annotations = json.load(f)
+    
+    # Create figure
+    fig, axes = plt.subplots(num_examples, 2, figsize=(12, 4*num_examples))
+    fig.suptitle('Model Predictions vs Ground Truth', fontsize=16)
+    
+    # Randomly select images
+    selected_images = np.random.choice(annotations['images'], num_examples, replace=False)
+    
+    for idx, img_ann in enumerate(selected_images):
+        image_path = images_dir / img_ann['file_name']
+        image = cv2.imread(str(image_path))
+        if image is None:
+            continue
+            
+        # Ground truth
+        true_bbox = img_ann['bbox']
+        h, w = image.shape[:2]
+        true_x = int(true_bbox[0] * w)
+        true_y = int(true_bbox[1] * h)
+        true_w = int(true_bbox[2] * w)
+        true_h = int(true_bbox[3] * h)
+        
+        ground_truth = image.copy()
+        cv2.rectangle(ground_truth, (true_x, true_y), 
+                     (true_x + true_w, true_y + true_h), 
+                     (0, 255, 0), 2)
+        
+        # Model prediction
+        image_resized = cv2.resize(image, image_size)
+        image_normalized = image_resized / 255.0
+        prediction = model.predict(np.expand_dims(image_normalized, axis=0), verbose=0)[0]
+        
+        pred_x = int(prediction[0] * w)
+        pred_y = int(prediction[1] * h)
+        pred_w = int(prediction[2] * w)
+        pred_h = int(prediction[3] * h)
+        
+        prediction_image = image.copy()
+        cv2.rectangle(prediction_image, (pred_x, pred_y), 
+                     (pred_x + pred_w, pred_y + pred_h), 
+                     (0, 0, 255), 2)
+        
+        # Convert BGR to RGB for matplotlib
+        ground_truth = cv2.cvtColor(ground_truth, cv2.COLOR_BGR2RGB)
+        prediction_image = cv2.cvtColor(prediction_image, cv2.COLOR_BGR2RGB)
+        
+        # Plot
+        axes[idx, 0].imshow(ground_truth)
+        axes[idx, 0].set_title('Ground Truth')
+        axes[idx, 0].axis('off')
+        
+        axes[idx, 1].imshow(prediction_image)
+        axes[idx, 1].set_title('Model Prediction')
+        axes[idx, 1].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig('prediction_examples.png')
+    plt.close()
+
 if __name__ == "__main__":
     # Set random seed for reproducibility
     tf.random.set_seed(42)
@@ -282,3 +343,6 @@ if __name__ == "__main__":
     
     # Save final model with complete architecture and weights
     model.save('final_hand_detection_model.keras', save_format='keras_v3')
+
+    # Plot prediction examples
+    plot_predictions(model, dataset_path)
