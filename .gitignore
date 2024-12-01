@@ -1,0 +1,15 @@
+deploy/detector/__pycache__
+deploy/detector/migrations
+deploy/gesture_recognition/__pycache__
+deploy/static/models
+deploy/staticfiles
+deploy/db.sqlite3
+gesture/gesture_classifier_model.keras
+gesture/preprocessed_data.npz
+gesture/static
+gesture/data
+hand/hand_dataset
+hand/hand_dataset_augmented
+hand/best_hand_detection_model.keras
+hand/final_hand_detection_model.keras
+.DS_Store

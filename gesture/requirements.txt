@@ -1,0 +1,10 @@
+tensorflow===2.14.0
+tensorflow-metal
+numpy
+opencv-python
+mediapipe
+scikit-learn
+scipy
+seaborn
+tensorflowjs
+Django
