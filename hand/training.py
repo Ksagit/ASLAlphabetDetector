@@ -8,10 +8,72 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 
+def calculate_iou(y_true, y_pred):
+    """Calculate Intersection over Union between boxes"""
+    # Convert from [x, y, w, h] to [x1, y1, x2, y2]
+    true_x1 = y_true[0]
+    true_y1 = y_true[1]
+    true_x2 = y_true[0] + y_true[2]
+    true_y2 = y_true[1] + y_true[3]
+    
+    pred_x1 = y_pred[0]
+    pred_y1 = y_pred[1]
+    pred_x2 = y_pred[0] + y_pred[2]
+    pred_y2 = y_pred[1] + y_pred[3]
+    
+    # Calculate intersection
+    x_left = max(true_x1, pred_x1)
+    y_top = max(true_y1, pred_y1)
+    x_right = min(true_x2, pred_x2)
+    y_bottom = min(true_y2, pred_y2)
+    
+    if x_right < x_left or y_bottom < y_top:
+        return 0.0
+        
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    
+    # Calculate union
+    true_area = (true_x2 - true_x1) * (true_y2 - true_y1)
+    pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+    union_area = true_area + pred_area - intersection_area
+    
+    iou = intersection_area / union_area if union_area > 0 else 0.0
+    return iou
+
+def custom_bbox_loss(width_weight=2.0):
+    """Custom loss function with higher weight for width prediction"""
+    def loss(y_true, y_pred):
+        # Coordinate loss (x, y)
+        coord_loss = tf.reduce_mean(tf.square(y_true[:, :2] - y_pred[:, :2]))
+        
+        # Width loss (weighted)
+        width_loss = width_weight * tf.reduce_mean(tf.square(y_true[:, 2] - y_pred[:, 2]))
+        
+        # Height loss
+        height_loss = tf.reduce_mean(tf.square(y_true[:, 3] - y_pred[:, 3]))
+        
+        # Total loss
+        total_loss = coord_loss + width_loss + height_loss
+        return total_loss
+    return loss
+
+def iou_metric(y_true, y_pred):
+    """IoU metric for model evaluation"""
+    iou_scores = tf.py_function(
+        lambda y_t, y_p: np.array([calculate_iou(t, p) for t, p in zip(y_t.numpy(), y_p.numpy())], dtype=np.float32),
+        [y_true, y_pred],
+        tf.float32
+    )
+    return tf.reduce_mean(iou_scores)
+
 def apply_augmentation(image, bbox):
     """Apply augmentations that preserve bounding box coordinates"""
     augmented_images = []
     augmented_boxes = []
+    
+    # Make sure image is 3D array (height, width, 1) for grayscale
+    if len(image.shape) == 2:
+        image = np.expand_dims(image, axis=-1)
     
     # Original image and box
     augmented_images.append(image)
@@ -41,6 +103,9 @@ def apply_augmentation(image, bbox):
         center = (image.shape[1] / 2, image.shape[0] / 2)
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
         rotated = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]))
+        # Maintain channel dimension
+        if len(rotated.shape) == 2:
+            rotated = np.expand_dims(rotated, axis=-1)
         
         # Adjust bbox for rotation
         # Convert bbox to corners
@@ -75,6 +140,10 @@ def apply_augmentation(image, bbox):
             augmented_images.append(rotated)
             augmented_boxes.append(new_bbox)
     
+    # Make sure all images have the same shape (height, width, 1)
+    augmented_images = [np.expand_dims(img, axis=-1) if len(img.shape) == 2 else img 
+                       for img in augmented_images]
+    
     return augmented_images, augmented_boxes
 
 def load_hand_dataset(dataset_path, image_size=(224, 224)):
@@ -86,19 +155,21 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
     images = []
     boxes = []
     
+    print("Loading dataset...")
     
     # Load annotations
     with open(annotations_file, 'r') as f:
         annotations = json.load(f)
     
     total_images = len(annotations['images'])
+    print(f"Found {total_images} images in annotations")
     
     # Process each image and its annotation
     for idx, img_ann in enumerate(annotations['images'], 1):
         try:
             # Load image
             image_path = images_dir / img_ann['file_name']
-            image = cv2.imread(str(image_path))
+            image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)  # Load as grayscale
             
             if image is None:
                 print(f"Failed to load image: {image_path}")
@@ -107,6 +178,7 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
             # Preprocess image
             image = cv2.resize(image, image_size)
             image = image / 255.0  # Normalize
+            image = np.expand_dims(image, axis=-1)  # Add channel dimension
             
             # Get bbox
             bbox = img_ann['bbox']
@@ -116,6 +188,9 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
             
             images.extend(aug_images)
             boxes.extend(aug_boxes)
+            
+            if idx % 100 == 0:
+                print(f"Processed {idx}/{total_images} images")
                 
         except Exception as e:
             print(f"Error processing {img_ann['file_name']}: {str(e)}")
@@ -124,38 +199,27 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
     if len(images) == 0:
         raise ValueError("No images loaded from dataset")
     
+    print(f"Successfully loaded {len(images)} images (including augmentations)")
     return np.array(images), np.array(boxes)
 
-def create_model(input_shape=(224, 224, 3)):
-    """Create a CNN model for hand detection"""
-    # Load pre-trained MobileNetV2 as base model
-    base_model = tf.keras.applications.MobileNetV2(
-        input_shape=input_shape,
+def create_model(input_shape=(224, 224, 1)):
+    base_model = tf.keras.applications.ResNet50V2(
+        input_shape=(224, 224, 3),
         include_top=False,
         weights='imagenet'
     )
     
-    # Freeze the base model layers
-    base_model.trainable = False
-    
-    # Create the model
+    # Add more specific detection layers
     model = models.Sequential([
-        # Data augmentation layers
-        layers.RandomFlip("horizontal"),
-        layers.RandomRotation(0.1),
-        layers.RandomZoom(0.1),
-        
-        # Base model
+        layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),
         base_model,
-        
-        # Additional layers for hand detection
+        layers.Conv2D(256, 3, activation='relu'),
         layers.GlobalAveragePooling2D(),
-        layers.Dense(128, activation='relu'),
+        layers.Dense(256, activation='relu'),
         layers.Dropout(0.5),
-        layers.Dense(64, activation='relu'),
-        layers.Dense(4, activation='sigmoid')  # bbox coordinates [x, y, width, height]
+        layers.Dense(128, activation='relu'),
+        layers.Dense(4, activation='sigmoid')
     ])
-    
     return model
 
 def train_model(dataset_path, epochs=65, batch_size=32):
@@ -174,22 +238,21 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     # Create and compile model
     model = create_model()
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss='mse',
-        metrics=['accuracy', 'mae']
+        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=0.001),
+        loss=custom_bbox_loss(width_weight=2.0),
+        metrics=['accuracy', 'mae', iou_metric]
     )
     
-    # Create callbacks with adjusted parameters
+    # Create callbacks
     callbacks = [
-        # Save best model weights
         tf.keras.callbacks.ModelCheckpoint(
             'best_hand_detection_model.keras',
             save_best_only=True,
-            save_weights_only=True,  # Only save weights
-            monitor='val_loss',
+            save_weights_only=True,
+            monitor='val_iou_metric',
+            mode='max',
             verbose=1
         ),
-        # Reduce learning rate with adjusted parameters
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
             factor=0.5,
@@ -200,6 +263,7 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     ]
     
     # Train model
+    print("Training model...")
     history = model.fit(
         X_train, y_train,
         epochs=epochs,
@@ -212,8 +276,18 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     # Plot training history
     plt.figure(figsize=(15, 5))
     
+    # Plot IoU
+    plt.subplot(1, 3, 1)
+    plt.plot(history.history['iou_metric'], label='Training IoU')
+    plt.plot(history.history['val_iou_metric'], label='Validation IoU')
+    plt.title('Model IoU')
+    plt.xlabel('Epoch')
+    plt.ylabel('IoU')
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    
     # Plot accuracy
-    plt.subplot(1, 2, 1)
+    plt.subplot(1, 3, 2)
     plt.plot(history.history['accuracy'], label='Training Accuracy')
     plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
     plt.title('Model Accuracy')
@@ -223,7 +297,7 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     plt.grid(True)
     
     # Plot loss
-    plt.subplot(1, 2, 2)
+    plt.subplot(1, 3, 3)
     plt.plot(history.history['loss'], label='Training Loss')
     plt.plot(history.history['val_loss'], label='Validation Loss')
     plt.title('Model Loss')
@@ -237,30 +311,6 @@ def train_model(dataset_path, epochs=65, batch_size=32):
     plt.close()
     
     return model, history
-
-def predict_on_image(model, image_path, image_size=(224, 224)):
-    """Make prediction on a single image"""
-    # Read and preprocess image
-    image = cv2.imread(image_path)
-    image_display = image.copy()
-    image = cv2.resize(image, image_size)
-    image = image / 255.0
-    
-    # Make prediction
-    prediction = model.predict(np.expand_dims(image, axis=0))[0]
-    
-    # Denormalize coordinates
-    height, width = image_display.shape[:2]
-    x, y, w, h = prediction
-    x = int(x * width)
-    y = int(y * height)
-    w = int(w * width)
-    h = int(h * height)
-    
-    # Draw bounding box
-    cv2.rectangle(image_display, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    
-    return image_display
 
 def plot_predictions(model, dataset_path, num_examples=4, image_size=(224, 224)):
     """Plot model predictions vs ground truth"""
@@ -281,7 +331,7 @@ def plot_predictions(model, dataset_path, num_examples=4, image_size=(224, 224))
     
     for idx, img_ann in enumerate(selected_images):
         image_path = images_dir / img_ann['file_name']
-        image = cv2.imread(str(image_path))
+        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
         if image is None:
             continue
             
@@ -294,13 +344,15 @@ def plot_predictions(model, dataset_path, num_examples=4, image_size=(224, 224))
         true_h = int(true_bbox[3] * h)
         
         ground_truth = image.copy()
+        ground_truth = cv2.cvtColor(ground_truth, cv2.COLOR_GRAY2BGR)
         cv2.rectangle(ground_truth, (true_x, true_y), 
                      (true_x + true_w, true_y + true_h), 
                      (0, 255, 0), 2)
         
         # Model prediction
         image_resized = cv2.resize(image, image_size)
-        image_normalized = image_resized / 255.0
+        image_normalized = (image_resized / 255.0).astype(np.float32)
+        image_normalized = np.expand_dims(image_normalized, axis=-1)  # Add channel dimension
         prediction = model.predict(np.expand_dims(image_normalized, axis=0), verbose=0)[0]
         
         pred_x = int(prediction[0] * w)
@@ -308,27 +360,53 @@ def plot_predictions(model, dataset_path, num_examples=4, image_size=(224, 224))
         pred_w = int(prediction[2] * w)
         pred_h = int(prediction[3] * h)
         
-        prediction_image = image.copy()
+        prediction_image = cv2.cvtColor(image.copy(), cv2.COLOR_GRAY2BGR)
         cv2.rectangle(prediction_image, (pred_x, pred_y), 
                      (pred_x + pred_w, pred_y + pred_h), 
                      (0, 0, 255), 2)
         
-        # Convert BGR to RGB for matplotlib
-        ground_truth = cv2.cvtColor(ground_truth, cv2.COLOR_BGR2RGB)
-        prediction_image = cv2.cvtColor(prediction_image, cv2.COLOR_BGR2RGB)
+        # Calculate IoU for this prediction
+        iou = calculate_iou(true_bbox, prediction)
         
         # Plot
-        axes[idx, 0].imshow(ground_truth)
-        axes[idx, 0].set_title('Ground Truth')
+        axes[idx, 0].imshow(ground_truth[..., ::-1])  # Convert BGR to RGB for matplotlib
+        axes[idx, 0].set_title(f'Ground Truth')
         axes[idx, 0].axis('off')
         
-        axes[idx, 1].imshow(prediction_image)
-        axes[idx, 1].set_title('Model Prediction')
+        axes[idx, 1].imshow(prediction_image[..., ::-1])  # Convert BGR to RGB for matplotlib
+        axes[idx, 1].set_title(f'Prediction (IoU: {iou:.2f})')
         axes[idx, 1].axis('off')
     
     plt.tight_layout()
     plt.savefig('prediction_examples.png')
     plt.close()
+
+def predict_on_image(model, image_path, image_size=(224, 224)):
+    """Make prediction on a single image"""
+    # Read and preprocess image
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    image_display = cv2.cvtColor(image.copy(), cv2.COLOR_GRAY2BGR)
+    
+    # Preprocess for prediction
+    image_resized = cv2.resize(image, image_size)
+    image_normalized = (image_resized / 255.0).astype(np.float32)
+    image_normalized = np.expand_dims(image_normalized, axis=-1)  # Add channel dimension
+    
+    # Make prediction
+    prediction = model.predict(np.expand_dims(image_normalized, axis=0), verbose=0)[0]
+    
+    # Denormalize coordinates
+    height, width = image.shape[:2]
+    x, y, w, h = prediction
+    x = int(x * width)
+    y = int(y * height)
+    w = int(w * width)
+    h = int(h * height)
+    
+    # Draw bounding box
+    cv2.rectangle(image_display, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    
+    return image_display
 
 if __name__ == "__main__":
     # Set random seed for reproducibility
@@ -336,13 +414,13 @@ if __name__ == "__main__":
     np.random.seed(42)
     
     # Set path to your dataset
-    dataset_path = "hand_dataset"  # Update this path if needed
+    dataset_path = "hand_dataset"
     
     # Train model
     model, training_history = train_model(dataset_path)
     
-    # Save final model with complete architecture and weights
+    # Save final model
     model.save('final_hand_detection_model.keras', save_format='keras_v3')
-
+    
     # Plot prediction examples
     plot_predictions(model, dataset_path)
