@@ -24,10 +24,7 @@ def load_dataset(data_dir, target_size=(128, 128), validation_split=0.2, test_sp
         label_to_index[letter] = current_label
         print(f"Processing class: {letter}")
         
-        image_files = os.listdir(folder_path)
-        if len(image_files) != 133:
-            print(f"Warning: Expected 133 images for letter {letter}, found {len(image_files)}")
-        
+        image_files = os.listdir(folder_path)        
         for image_file in image_files:
             if not image_file.lower().endswith(('.png', '.jpg', '.jpeg')):
                 continue
@@ -224,6 +221,9 @@ def train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping, e
     plt.tight_layout()
     plt.show()
     
+    # Save training history plots
+    save_training_plots(history)
+    
     # Plot confusion matrix
     plt.figure(figsize=(15, 15))
     cm = confusion_matrix(y_test, y_pred_classes)
@@ -236,7 +236,12 @@ def train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping, e
     plt.xticks(rotation=45)
     plt.yticks(rotation=45)
     plt.tight_layout()
+    plt.savefig('confusion_matrix.png')
     plt.show()
+    print("Confusion matrix saved to confusion_matrix.png")
+    
+    # Plot prediction samples
+    plot_predictions(X_test, y_test, model, label_mapping)
     
     # Save final model
     try:
@@ -247,9 +252,64 @@ def train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping, e
     
     return model, history
 
+def save_training_plots(history, save_path='training_history.png'):
+    """Save training history plots to a PNG file"""
+    plt.figure(figsize=(15, 5))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Training')
+    plt.plot(history.history['val_accuracy'], label='Validation')
+    plt.title('Model Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Training')
+    plt.plot(history.history['val_loss'], label='Validation')
+    plt.title('Model Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+    print(f"Training history plots saved to {save_path}")
+
+def plot_predictions(X_test, y_test, model, label_mapping, num_samples=10):
+    """Plot sample predictions versus actual labels"""
+    # Get random indices
+    indices = np.random.randint(0, len(X_test), num_samples)
+    
+    # Get predictions
+    predictions = model.predict(X_test[indices])
+    pred_classes = np.argmax(predictions, axis=1)
+    
+    # Create reverse mapping
+    index_to_label = {v: k for k, v in label_mapping.items()}
+    
+    # Create the plot
+    plt.figure(figsize=(20, 4))
+    for i, idx in enumerate(indices):
+        plt.subplot(2, 5, i + 1)
+        plt.imshow(X_test[idx].reshape(128, 128), cmap='gray')
+        true_label = index_to_label[y_test[idx]]
+        pred_label = index_to_label[pred_classes[i]]
+        color = 'green' if true_label == pred_label else 'red'
+        plt.title(f'True: {true_label}\nPred: {pred_label}', color=color)
+        plt.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig('prediction_samples.png')
+    plt.show()
+    print("Prediction samples saved to prediction_samples.png")
+
 if __name__ == "__main__":
     data_dir = os.path.join('data', 'augmented_images')
     (X_train, y_train), (X_val, y_val), (X_test, y_test), label_mapping = load_dataset(data_dir)
-        
+    
     # Train the model
     model, history = train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping)
