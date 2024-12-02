@@ -7,4 +7,3 @@ scikit-learn
 scipy
 seaborn
 tensorflowjs
-Django
