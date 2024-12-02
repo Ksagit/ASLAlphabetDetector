@@ -118,7 +118,7 @@ def load_hand_dataset(dataset_path, image_size=(224, 224)):
     print(f"Successfully loaded {len(images)} images")
     return np.array(images), np.array(boxes)
 
-def create_model(input_shape=(224, 224, 1)):
+def create_model():
     base_model = tf.keras.applications.ResNet50V2(
         input_shape=(224, 224, 3),
         include_top=False,
@@ -132,9 +132,9 @@ def create_model(input_shape=(224, 224, 1)):
         layers.GlobalAveragePooling2D(),
         layers.Dense(64, 
                     activation='relu', 
-                    kernel_regularizer=tf.keras.regularizers.l2(0.001)),  # Reduced from 0.01
+                    kernel_regularizer=tf.keras.regularizers.l2(0.001)),
         layers.BatchNormalization(),
-        layers.Dropout(0.3),  # Reduced dropout
+        layers.Dropout(0.3),
         layers.Dense(32, 
                     activation='relu',
                     kernel_regularizer=tf.keras.regularizers.l2(0.001)),

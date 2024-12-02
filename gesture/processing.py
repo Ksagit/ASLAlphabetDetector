@@ -167,19 +167,6 @@ def load_and_preprocess_images(data_dir, target_size=(128, 128), validation_spli
     
     return (X_train, y_train), (X_val, y_val), (X_test, y_test), label_to_index
 
-def save_preprocessed_data(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping):
-    """Save preprocessed data to a file"""
-    print("\nSaving preprocessed data...")
-    np.savez('preprocessed_data.npz',
-             X_train=X_train, y_train=y_train,
-             X_val=X_val, y_val=y_val,
-             X_test=X_test, y_test=y_test,
-             label_mapping=label_mapping)
-    print("Data saved to 'preprocessed_data.npz'")
-
 if __name__ == "__main__":
     data_dir = os.path.join('data', 'images')
     (X_train, y_train), (X_val, y_val), (X_test, y_test), label_mapping = load_and_preprocess_images(data_dir)
-    
-    # Save the preprocessed data
-    save_preprocessed_data(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping)

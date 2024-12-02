@@ -3,6 +3,104 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
+import os
+import cv2
+
+def load_dataset(data_dir, target_size=(128, 128), validation_split=0.2, test_split=0.1):
+    """Load dataset from the augmented_images directory with balanced class splits"""
+    images = []
+    labels = []
+    label_to_index = {}
+    current_label = 0
+    
+    print("Loading images...")
+    
+    for letter in 'abcdefghiklmnopqrstuvwxy':
+        folder_path = os.path.join(data_dir, letter)
+        if not os.path.isdir(folder_path):
+            print(f"Warning: Directory not found for letter {letter}")
+            continue
+            
+        label_to_index[letter] = current_label
+        print(f"Processing class: {letter}")
+        
+        image_files = os.listdir(folder_path)
+        if len(image_files) != 133:
+            print(f"Warning: Expected 133 images for letter {letter}, found {len(image_files)}")
+        
+        for image_file in image_files:
+            if not image_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                continue
+                
+            image_path = os.path.join(folder_path, image_file)
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"Failed to load image: {image_path}")
+                continue
+                
+            # Convert to grayscale
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # Resize image
+            resized = cv2.resize(gray, target_size)
+            
+            # Normalize pixel values to [0,1]
+            normalized = resized.astype('float32') / 255.0
+            
+            images.append(normalized)
+            labels.append(current_label)
+            
+        current_label += 1
+    
+    # Convert to numpy arrays
+    X = np.array(images)
+    y = np.array(labels)
+    
+    # Reshape images to include channel dimension
+    X = X.reshape(X.shape[0], target_size[0], target_size[1], 1)
+    
+    # Split per class to maintain proportions
+    X_train, X_val, X_test = [], [], []
+    y_train, y_val, y_test = [], [], []
+    
+    for class_idx in range(len(label_to_index)):
+        # Get indices for this class
+        class_indices = np.where(y == class_idx)[0]
+        class_X = X[class_indices]
+        class_y = y[class_indices]
+        
+        # Calculate split sizes for this class
+        n_samples = len(class_indices)
+        n_test = int(test_split * n_samples)
+        n_val = int(validation_split * n_samples)
+        
+        # Split into train, validation, and test
+        X_class_train = class_X[:-n_test-n_val]
+        y_class_train = class_y[:-n_test-n_val]
+        
+        X_class_val = class_X[-n_test-n_val:-n_test]
+        y_class_val = class_y[-n_test-n_val:-n_test]
+        
+        X_class_test = class_X[-n_test:]
+        y_class_test = class_y[-n_test:]
+        
+        # Append to main lists
+        X_train.append(X_class_train)
+        y_train.append(y_class_train)
+        X_val.append(X_class_val)
+        y_val.append(y_class_val)
+        X_test.append(X_class_test)
+        y_test.append(y_class_test)
+    
+    # Concatenate all splits
+    X_train = np.concatenate(X_train)
+    y_train = np.concatenate(y_train)
+    X_val = np.concatenate(X_val)
+    y_val = np.concatenate(y_val)
+    X_test = np.concatenate(X_test)
+    y_test = np.concatenate(y_test)
+    
+    return (X_train, y_train), (X_val, y_val), (X_test, y_test), label_to_index
 
 def create_model(input_shape, num_classes):
     """Create a CNN model for gesture classification"""
@@ -47,7 +145,7 @@ def create_model(input_shape, num_classes):
     
     return model
 
-def train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping, epochs=30):
+def train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping, epochs=20):
     """Train the model and display results"""
     
     # Get input shape and number of classes
@@ -150,15 +248,8 @@ def train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping, e
     return model, history
 
 if __name__ == "__main__":
-    # Load preprocessed data
-    data = np.load('preprocessed_data.npz', allow_pickle=True)
-    X_train = data['X_train']
-    y_train = data['y_train']
-    X_val = data['X_val']
-    y_val = data['y_val']
-    X_test = data['X_test']
-    y_test = data['y_test']
-    label_mapping = data['label_mapping'].item()
-    
+    data_dir = os.path.join('data', 'augmented_images')
+    (X_train, y_train), (X_val, y_val), (X_test, y_test), label_mapping = load_dataset(data_dir)
+        
     # Train the model
     model, history = train_model(X_train, y_train, X_val, y_val, X_test, y_test, label_mapping)
