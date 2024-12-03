@@ -5,6 +5,7 @@ from flask import Flask, Response, render_template
 import threading
 from queue import Queue
 
+# Custom functions for model loading
 def custom_bbox_loss(width_weight=2.0):
     def loss(y_true, y_pred):
         coord_loss = tf.reduce_mean(tf.square(y_true[:, :2] - y_pred[:, :2]))
@@ -56,6 +57,7 @@ hand_model = tf.keras.models.load_model('final_hand_detection_model.keras',
                                        safe_mode=False)
 gesture_model = tf.keras.models.load_model('gesture_classifier_model.keras',
                                           safe_mode=False)
+
 # Global variables for thread-safe frame sharing
 frame_queue = Queue(maxsize=1)
 processed_frames = {
@@ -63,7 +65,7 @@ processed_frames = {
     'gesture_prediction': Queue(maxsize=1)
 }
 
-def process_frame_for_hand(frame, confidence_threshold=0.5):
+def process_frame_for_hand(frame, confidence_threshold=0.1):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, (224, 224))
     normalized = resized / 255.0
@@ -71,8 +73,9 @@ def process_frame_for_hand(frame, confidence_threshold=0.5):
     
     bbox = hand_model.predict(input_tensor, verbose=0)[0]
     
-    # Add confidence score calculation (example - adjust based on your model)
-    confidence = np.mean(bbox)  # Or use a more sophisticated confidence calculation
+    # Better confidence calculation
+    area = bbox[2] * bbox[3]  # width * height
+    confidence = area if 0 < area < 1 else 0
     
     if confidence < confidence_threshold:
         return frame.copy(), None
@@ -85,12 +88,13 @@ def process_frame_for_hand(frame, confidence_threshold=0.5):
     
     output_frame = frame.copy()
     cv2.rectangle(output_frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
-    cv2.putText(output_frame, f"Conf: {confidence:.2f}", (x, y-10), 
+    cv2.putText(output_frame, f"Conf: {confidence:.2f}", 
+                (10, h - 20), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
     
     return output_frame, (x, y, width, height) if confidence >= confidence_threshold else None
 
-def process_frame_for_gesture(frame, bbox, confidence_threshold=0.7):
+def process_frame_for_gesture(frame, bbox, confidence_threshold=0.1):
     if bbox is None:
         return frame
         
@@ -115,37 +119,10 @@ def process_frame_for_gesture(frame, bbox, confidence_threshold=0.7):
     predicted_letter = letters[gesture_class]
     
     output_frame = frame.copy()
+    h, w = frame.shape[:2]
     cv2.putText(output_frame, f"{predicted_letter} ({confidence:.2f})", 
-                (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-    
-    return output_frame
-
-def process_frame_for_gesture(frame, bbox):
-    x, y, width, height = bbox
-    
-    # Extract hand region
-    hand_region = frame[y:y+height, x:x+width]
-    if hand_region.size == 0:
-        return frame
-    
-    # Preprocess for gesture classification
-    gray = cv2.cvtColor(hand_region, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (128, 128))
-    normalized = resized / 255.0
-    input_tensor = np.expand_dims(normalized, axis=(0, -1))
-    
-    # Get prediction
-    prediction = gesture_model.predict(input_tensor, verbose=0)
-    gesture_class = np.argmax(prediction)
-    
-    # Map class index to letter (adjust based on your model's classes)
-    letters = 'abcdefghiklmnopqrstuvwxy'
-    predicted_letter = letters[gesture_class]
-    
-    # Draw prediction
-    output_frame = frame.copy()
-    cv2.putText(output_frame, f"Gesture: {predicted_letter}", 
-                (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                (w-200, 50),  # Position in top right corner
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
     
     return output_frame
 
@@ -205,6 +182,5 @@ def video_feed(feed_type):
                        mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    # Start frame capture thread
     threading.Thread(target=capture_frames, daemon=True).start()
-    app.run(debug=False)
+    app.run(debug=False, host="0.0.0.0", port=5001)
