@@ -1,4 +1,6 @@
 deploy/__pycache__
+deploy/final_hand_detection_model.keras
+deploy/gesture_classifier_model.keras
 gesture/gesture_classifier_model.keras
 gesture/preprocessed_data.npz
 gesture/static
