@@ -43,6 +43,11 @@ python3 detector.py
 ```
 
 ### Gesture classification
+Navigate to the appropriate directory:
+```bash
+cd gesture
+```
+
 Create the dataset with:
 ```bash
 python3 gathering.py
