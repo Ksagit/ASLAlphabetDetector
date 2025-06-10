@@ -1,4 +1,4 @@
-# ASLALphabetDetector
+# ASLAlphabetDetector
 An application for American Sign Language classification built in Python. It includes the training two custom modes using Tensorflow, one for hand detection and the other for gesture classification. The models were trained on a custom dataset created with the included scripts.
 
 ## Requirements
